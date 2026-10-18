@@ -20,8 +20,9 @@ An AI tool for a first assessment of land plot suitability for construction. The
 | File | Purpose |
 |---|---|
 | `prepare_data.py` | Downloads the city boundary, roads and buildings from OpenStreetMap into the `data/` folder |
+| `train_model.py` | Builds the training dataset (random points in Almaty) and trains the Random Forest model |
 | `app.py` | Streamlit web app with the interactive map |
-| `01_site_analysis_mvp.ipynb` | Notebook with data exploration, feature building and model training |
+| `01_site_analysis_mvp.ipynb` | Notebook with the first data exploration (early version of the pipeline) |
 | `site_model.pkl` | Trained Random Forest model |
 
 ## How to run
@@ -39,7 +40,13 @@ pip install geopandas osmnx folium streamlit streamlit-folium scikit-learn panda
 python prepare_data.py
 ```
 
-4. Start the app:
+4. Train the model (a few minutes, it requests elevations from a free API):
+
+```
+python train_model.py
+```
+
+5. Start the app:
 
 ```
 streamlit run app.py
@@ -49,7 +56,8 @@ streamlit run app.py
 
 - The suitability score is calculated with a temporary formula based on elevation, road distance and building density. The model learns this formula, so the explanation shows the logic of the model, not real soil or terrain properties.
 - Seismic zones, landslides, mudflows, soil type and zoning rules are not included yet.
-- The training set is small (88 points in Almaty).
+- The training set is small: about 480 random points in Almaty below 1300 m.
+- The model reproduces the temporary formula with a mean error of about 1.7 points on held-out points. This shows that the pipeline works, not that the score is accurate.
 - The tool gives a preliminary estimate only. It does not replace geological surveys or checking urban planning restrictions.
 
 ## Roadmap
