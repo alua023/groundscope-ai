@@ -1,3 +1,6 @@
+import json
+import os
+
 import folium
 import joblib
 import pandas as pd
@@ -10,12 +13,23 @@ from streamlit_folium import st_folium
 CRS = 32643  # UTM zone 43N: подходит для Алматы
 MAX_TRAIN_ELEVATION = 1300  # модель обучена на участках ниже этой высоты
 
-# "Типичный участок": медианы обучающей выборки (88 точек Алматы)
-REFERENCE = {
+# "Типичный участок": медианы обучающей выборки.
+# Файл reference.json создаёт train_model.py; если его нет, берутся значения по умолчанию.
+DEFAULT_REFERENCE = {
     "высота_м": 754.5,
     "расст_до_дороги_м": 40.6,
     "плотность_застройки": 84.5,
 }
+
+
+def load_reference():
+    if os.path.exists("reference.json"):
+        with open("reference.json", encoding="utf-8") as f:
+            return json.load(f)
+    return DEFAULT_REFERENCE
+
+
+REFERENCE = load_reference()
 LABELS = {
     "высота_м": "Высота",
     "расст_до_дороги_м": "Расстояние до дороги",
