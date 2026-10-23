@@ -2,14 +2,22 @@
 
 Запуск (после prepare_data.py):  python train_model.py
 
-Признаки считаются так же, как в app.py: высота, расстояние до ближайшей дороги,
-число зданий в радиусе 300 м и уклон рельефа. На выходе:
+Признаки считаются так же, как в app.py: высота, уклон рельефа, расстояние до ближайшей
+дороги, расстояние до ближайшего водотока и число зданий в радиусе 300 м.
+
+Точки и их высоты сохраняются в data/training_dataset.csv и при повторном запуске
+берутся оттуда (интернет для высот не нужен). Чтобы пересобрать точки заново:
+    python train_model.py --refresh
+
+На выходе:
   - site_model.pkl            обученная модель
   - reference.json            "типичный участок" (медианы признаков) для объяснений
   - data/training_dataset.csv собранный датасет
 """
 import json
 import math
+import os
+import sys
 import time
 
 import geopandas as gpd
@@ -27,7 +35,9 @@ N_CANDIDATES = 1500  # случайных точек внутри границы
 MAX_ELEVATION = 1300  # выше начинаются горы, это не зона застройки
 SLOPE_STEP_M = 100  # шаг в метрах для расчёта уклона (высоты берутся с шагом ~90 м)
 SEED = 42
-FEATURES = ["высота_м", "расст_до_дороги_м", "плотность_застройки", "уклон_%"]
+CACHE = "data/training_dataset.csv"
+REFRESH = "--refresh" in sys.argv
+FEATURES = ["высота_м", "расст_до_дороги_м", "плотность_застройки", "уклон_%", "расст_до_воды_м"]
 
 
 def get_elevations(lats, lons, batch=50, pause=6.0):
@@ -73,8 +83,8 @@ def slope_percent(z_north, z_south, z_east, z_west, step=SLOPE_STEP_M):
 def suitability_score(row):
     """Условная формула score (временная замена экспертным меткам).
 
-    Порог уклона 15% взят из ограничений на застройку в Алматы (склоны круче 15%
-    относятся к неблагоприятным условиям). Размеры штрафов выбраны условно.
+    Порог уклона 15% взят из ограничений на застройку в Алматы. Штраф за близость к водотоку
+    введён как грубая мера риска подтопления и селевого воздействия. Размеры штрафов выбраны условно.
     """
     score = 100
     score -= min(row["расст_до_дороги_м"] / 10, 40)
@@ -92,30 +102,28 @@ def suitability_score(row):
         score -= min(10 + (slope - 15) * 2, 40)
     elif slope > 5:
         score -= (slope - 5)
+
+    water = row["расст_до_воды_м"]
+    if water < 100:
+        score -= (100 - water) / 5  # до 20 баллов у самого водотока
     return round(max(score, 0), 1)
 
 
-if __name__ == "__main__":
-    print("Загружаю данные города...")
-    boundary = gpd.read_file("data/boundary.gpkg").to_crs(CRS).geometry.iloc[0]
-    roads = gpd.read_file("data/roads.gpkg")
-    buildings = gpd.read_file("data/buildings.gpkg")
-
+def sample_terrain_points(boundary):
+    """Случайные точки внутри города с высотой и уклоном (требует интернет)."""
     print(f"Генерирую {N_CANDIDATES} случайных точек и оставляю те, что внутри города...")
     rng = np.random.default_rng(SEED)
     minx, miny, maxx, maxy = boundary.bounds
     xs = rng.uniform(minx, maxx, N_CANDIDATES)
     ys = rng.uniform(miny, maxy, N_CANDIDATES)
     inside = shapely.contains_xy(boundary, xs, ys)
-    points_proj = gpd.GeoSeries(gpd.points_from_xy(xs[inside], ys[inside]), crs=CRS)
-    points_wgs = points_proj.to_crs(4326)
+    points_wgs = gpd.GeoSeries(gpd.points_from_xy(xs[inside], ys[inside]), crs=CRS).to_crs(4326)
     lats = points_wgs.y.to_numpy()
     lons = points_wgs.x.to_numpy()
-    print(f"Внутри города: {len(points_proj)} точек")
+    print(f"Внутри города: {len(lats)} точек")
 
     print("Запрашиваю высоты точек...")
     elevations = get_elevations(lats, lons)
-
     keep = [i for i, e in enumerate(elevations) if e <= MAX_ELEVATION]
     print(f"Ниже {MAX_ELEVATION} м: {len(keep)} точек")
 
@@ -127,30 +135,59 @@ if __name__ == "__main__":
             neighbor_lons.append(n_lon)
     neighbor_elevations = get_elevations(neighbor_lats, neighbor_lons)
 
-    print("Считаю остальные признаки...")
     rows = []
     for n, i in enumerate(keep):
         z_north, z_south, z_east, z_west = neighbor_elevations[4 * n:4 * n + 4]
-        point = points_proj.iloc[i]
-        road_dist = float(roads.distance(point).min())
-        density = int(len(buildings.sindex.query(point.buffer(300), predicate="intersects")))
         rows.append({
             "lat": lats[i],
             "lon": lons[i],
             "высота_м": elevations[i],
-            "расст_до_дороги_м": round(road_dist, 1),
-            "плотность_застройки": density,
             "уклон_%": round(slope_percent(z_north, z_south, z_east, z_west), 1),
         })
-        if (n + 1) % 100 == 0:
-            print(f"  обработано {n + 1}/{len(keep)}")
+    return pd.DataFrame(rows)
 
-    dataset = pd.DataFrame(rows)
+
+if __name__ == "__main__":
+    print("Загружаю данные города...")
+    boundary = gpd.read_file("data/boundary.gpkg").to_crs(CRS).geometry.iloc[0]
+    roads = gpd.read_file("data/roads.gpkg")
+    buildings = gpd.read_file("data/buildings.gpkg")
+    if not os.path.exists("data/waterways.gpkg"):
+        raise SystemExit("Нет файла data/waterways.gpkg. Сначала запустите: python prepare_data.py")
+    waterways = gpd.read_file("data/waterways.gpkg")
+
+    terrain = None
+    if os.path.exists(CACHE) and not REFRESH:
+        cached = pd.read_csv(CACHE, encoding="utf-8-sig")
+        needed = {"lat", "lon", "высота_м", "уклон_%"}
+        if needed <= set(cached.columns):
+            terrain = cached[["lat", "lon", "высота_м", "уклон_%"]].copy()
+            print(f"Беру сохранённые точки из {CACHE}: {len(terrain)} шт. "
+                  "(для пересбора: python train_model.py --refresh)")
+    if terrain is None:
+        terrain = sample_terrain_points(boundary)
+
+    print("Считаю расстояния до дорог и воды и плотность застройки...")
+    points_proj = gpd.GeoSeries(gpd.points_from_xy(terrain["lon"], terrain["lat"]), crs=4326).to_crs(CRS)
+    extra_rows = []
+    for n, point in enumerate(points_proj):
+        extra_rows.append({
+            "расст_до_дороги_м": round(float(roads.distance(point).min()), 1),
+            "расст_до_воды_м": round(float(waterways.distance(point).min()), 1),
+            "плотность_застройки": int(len(buildings.sindex.query(point.buffer(300), predicate="intersects"))),
+        })
+        if (n + 1) % 100 == 0:
+            print(f"  обработано {n + 1}/{len(points_proj)}")
+
+    dataset = pd.concat([terrain.reset_index(drop=True), pd.DataFrame(extra_rows)], axis=1)
     dataset["score_пригодности"] = dataset.apply(suitability_score, axis=1)
-    dataset.to_csv("data/training_dataset.csv", index=False, encoding="utf-8-sig")
+    dataset.to_csv(CACHE, index=False, encoding="utf-8-sig")
+
     print(f"Датасет: {len(dataset)} точек в зоне застройки (ниже {MAX_ELEVATION} м)")
     print(f"Уклон: медиана {dataset['уклон_%'].median():.1f}%, "
-          f"доля точек круче 15%: {(dataset['уклон_%'] > 15).mean() * 100:.0f}%")
+          f"круче 15%: {(dataset['уклон_%'] > 15).mean() * 100:.0f}% точек")
+    print(f"До водотока: медиана {dataset['расст_до_воды_м'].median():.0f} м, "
+          f"ближе 100 м: {(dataset['расст_до_воды_м'] < 100).mean() * 100:.0f}% точек")
 
     X = dataset[FEATURES]
     y = dataset["score_пригодности"]
@@ -179,4 +216,4 @@ if __name__ == "__main__":
     for name, value in sorted(zip(FEATURES, model.feature_importances_), key=lambda item: -item[1]):
         print(f"  {name}: {value:.2f}")
     print()
-    print("Готово: site_model.pkl, reference.json и data/training_dataset.csv сохранены.")
+    print(f"Готово: site_model.pkl, reference.json и {CACHE} сохранены.")

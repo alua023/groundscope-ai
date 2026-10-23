@@ -12,15 +12,16 @@ An AI tool for a first assessment of land plot suitability for construction. The
   - distance to the nearest road (OpenStreetMap)
   - building density within 300 m (OpenStreetMap)
   - terrain slope, calculated from elevations of neighbouring points (about 100 m step)
+  - distance to the nearest river, stream or canal (OpenStreetMap), used as a rough proxy for flood and mudflow exposure
 - Predicts a suitability score from 0 to 100 with a Random Forest model
 - Explains the result by showing how much each feature raises or lowers the score compared with a typical plot
-- Warns when a point is outside the city, outside the elevation range the model was trained on, or on a slope steeper than 15% (treated as an unfavourable condition for construction in Almaty)
+- Warns when a point is outside the city, outside the elevation range the model was trained on, on a slope steeper than 15% (treated as an unfavourable condition for construction in Almaty), or very close to a watercourse
 
 ## Project structure
 
 | File | Purpose |
 |---|---|
-| `prepare_data.py` | Downloads the city boundary, roads and buildings from OpenStreetMap into the `data/` folder |
+| `prepare_data.py` | Downloads the city boundary, roads, buildings and watercourses from OpenStreetMap into the `data/` folder |
 | `train_model.py` | Builds the training dataset (random points in Almaty) and trains the Random Forest model |
 | `app.py` | Streamlit web app with the interactive map |
 | `01_site_analysis_mvp.ipynb` | Notebook with the first data exploration (early version of the pipeline) |
@@ -55,9 +56,10 @@ streamlit run app.py
 
 ## Limitations
 
-- The suitability score is calculated with a temporary formula based on elevation, road distance, building density and slope. The 15% slope threshold comes from construction restrictions described for Almaty; the size of the penalties is an assumption. The model learns this formula, so the explanation shows the logic of the model, not real soil or terrain properties.
+- The suitability score is calculated with a temporary formula based on elevation, road distance, building density, slope and distance to watercourses. The 15% slope threshold comes from construction restrictions described for Almaty; the size of the penalties is an assumption. The model learns this formula, so the explanation shows the logic of the model, not real soil or terrain properties.
 - Seismic zones, landslides, mudflows, groundwater, soil type and zoning rules are not included yet.
 - Slope is approximate: the elevation source has a resolution of about 90 m.
+- Distance to watercourses is only a rough proxy for flood and mudflow exposure. It is not a hazard map and does not replace water protection zone checks.
 - The training set is small: about 480 random points in Almaty below 1300 m.
 - The model reproduces the temporary formula with a mean error of about 1.7 points on held-out points. This shows that the pipeline works, not that the score is accurate.
 - The tool gives a preliminary estimate only. It does not replace geological surveys or checking urban planning restrictions.

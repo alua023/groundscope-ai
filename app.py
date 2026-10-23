@@ -15,13 +15,15 @@ CRS = 32643  # UTM zone 43N: подходит для Алматы
 MAX_TRAIN_ELEVATION = 1300  # модель обучена на участках ниже этой высоты
 SLOPE_STEP_M = 100  # шаг в метрах для расчёта уклона (как в train_model.py)
 SLOPE_LIMIT = 15  # склоны круче 15% относятся к неблагоприятным условиям застройки
+WATER_NEAR_M = 50  # ближе этого расстояния до водотока показываем предупреждение
 
-FEATURES = ["высота_м", "расст_до_дороги_м", "плотность_застройки", "уклон_%"]
+FEATURES = ["высота_м", "расст_до_дороги_м", "плотность_застройки", "уклон_%", "расст_до_воды_м"]
 LABELS = {
     "высота_м": "Высота",
     "расст_до_дороги_м": "Расстояние до дороги",
     "плотность_застройки": "Плотность застройки",
     "уклон_%": "Уклон рельефа",
+    "расст_до_воды_м": "Расстояние до водотока",
 }
 
 # "Типичный участок": медианы обучающей выборки.
@@ -31,6 +33,7 @@ DEFAULT_REFERENCE = {
     "расст_до_дороги_м": 40.6,
     "плотность_застройки": 84.5,
     "уклон_%": 3.0,
+    "расст_до_воды_м": 400.0,
 }
 
 
@@ -56,11 +59,12 @@ def load_resources():
     boundary_proj = boundary_wgs.to_crs(CRS)
     roads = gpd.read_file("data/roads.gpkg")
     buildings = gpd.read_file("data/buildings.gpkg")
-    return model, boundary_wgs, boundary_proj.geometry.iloc[0], roads, buildings
+    waterways = gpd.read_file("data/waterways.gpkg")
+    return model, boundary_wgs, boundary_proj.geometry.iloc[0], roads, buildings, waterways
 
 
 try:
-    model, boundary_wgs, city_polygon, roads, buildings = load_resources()
+    model, boundary_wgs, city_polygon, roads, buildings, waterways = load_resources()
 except Exception:
     st.error("Не найдены данные города. Сначала запустите в терминале: python prepare_data.py")
     st.stop()
@@ -146,11 +150,12 @@ with st.spinner("Анализируем участок..."):
         st.stop()
 
     road_dist = float(roads.distance(point).min())
+    water_dist = float(waterways.distance(point).min())
     nearby = buildings.sindex.query(point.buffer(300), predicate="intersects")
     density = int(len(nearby))
 
     features = pd.DataFrame(
-        [[elevation, road_dist, density, slope]],
+        [[elevation, road_dist, density, slope, water_dist]],
         columns=FEATURES,
     )
     score = float(model.predict(features)[0])
@@ -158,28 +163,41 @@ with st.spinner("Анализируем участок..."):
 
 st.metric("Предварительный score пригодности", f"{score:.1f} / 100")
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Высота", f"{elevation:.0f} м")
-col2.metric("До дороги", f"{road_dist:.0f} м")
-col3.metric("Зданий в 300 м", density)
-col4.metric("Уклон", f"{slope:.1f} %")
+row1 = st.columns(3)
+row1[0].metric("Высота", f"{elevation:.0f} м")
+row1[1].metric("До дороги", f"{road_dist:.0f} м")
+row1[2].metric("Зданий в 300 м", density)
+row2 = st.columns(3)
+row2[0].metric("Уклон", f"{slope:.1f} %")
+row2[1].metric("До водотока", f"{water_dist:.0f} м")
 
+warnings = []
 if elevation > MAX_TRAIN_ELEVATION:
-    st.warning(
+    warnings.append(
         "Высота выше диапазона, на котором обучена модель (до 1300 м). "
         "Оценка может быть ненадёжной."
     )
-elif slope > SLOPE_LIMIT:
-    st.warning(
+if slope > SLOPE_LIMIT:
+    warnings.append(
         f"Уклон больше {SLOPE_LIMIT}%: склоны круче этого значения относятся "
         "к неблагоприятным условиям застройки в Алматы."
     )
-elif score > 80:
-    st.success("Участок хорошо подходит под застройку по этим признакам.")
-elif score > 50:
-    st.warning("Участок требует дополнительной оценки.")
-else:
-    st.error("У участка есть серьёзные ограничения по этим признакам.")
+if water_dist < WATER_NEAR_M:
+    warnings.append(
+        f"Участок ближе {WATER_NEAR_M} м к реке, ручью или каналу: возможен риск подтопления "
+        "или селевого воздействия. Это приближённый признак по данным OpenStreetMap, "
+        "водоохранные зоны нужно проверять отдельно."
+    )
+
+for text in warnings:
+    st.warning(text)
+if not warnings:
+    if score > 80:
+        st.success("Участок хорошо подходит под застройку по этим признакам.")
+    elif score > 50:
+        st.warning("Участок требует дополнительной оценки.")
+    else:
+        st.error("У участка есть серьёзные ограничения по этим признакам.")
 
 st.subheader("Почему такая оценка")
 st.bar_chart(pd.DataFrame({"Вклад в оценку (баллы)": effects}))
@@ -197,5 +215,6 @@ st.caption(
     "изыскания и проверку градостроительных ограничений. Score пока рассчитан по "
     "условной формуле, а не по экспертным меткам, поэтому объяснение показывает "
     "логику модели, а не реальные свойства грунта. Уклон считается по цифровой модели "
-    "рельефа с шагом около 90 м и даёт только приближённую оценку."
+    "рельефа с шагом около 90 м и даёт только приближённую оценку. Расстояние до водотока "
+    "не заменяет карту селевой опасности."
 )
