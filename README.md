@@ -11,9 +11,10 @@ An AI tool for a first assessment of land plot suitability for construction. The
   - elevation (Open-Meteo elevation API)
   - distance to the nearest road (OpenStreetMap)
   - building density within 300 m (OpenStreetMap)
+  - terrain slope, calculated from elevations of neighbouring points (about 100 m step)
 - Predicts a suitability score from 0 to 100 with a Random Forest model
 - Explains the result by showing how much each feature raises or lowers the score compared with a typical plot
-- Warns when a point is outside the city or outside the elevation range the model was trained on
+- Warns when a point is outside the city, outside the elevation range the model was trained on, or on a slope steeper than 15% (treated as an unfavourable condition for construction in Almaty)
 
 ## Project structure
 
@@ -54,8 +55,9 @@ streamlit run app.py
 
 ## Limitations
 
-- The suitability score is calculated with a temporary formula based on elevation, road distance and building density. The model learns this formula, so the explanation shows the logic of the model, not real soil or terrain properties.
-- Seismic zones, landslides, mudflows, soil type and zoning rules are not included yet.
+- The suitability score is calculated with a temporary formula based on elevation, road distance, building density and slope. The 15% slope threshold comes from construction restrictions described for Almaty; the size of the penalties is an assumption. The model learns this formula, so the explanation shows the logic of the model, not real soil or terrain properties.
+- Seismic zones, landslides, mudflows, groundwater, soil type and zoning rules are not included yet.
+- Slope is approximate: the elevation source has a resolution of about 90 m.
 - The training set is small: about 480 random points in Almaty below 1300 m.
 - The model reproduces the temporary formula with a mean error of about 1.7 points on held-out points. This shows that the pipeline works, not that the score is accurate.
 - The tool gives a preliminary estimate only. It does not replace geological surveys or checking urban planning restrictions.

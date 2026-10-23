@@ -1,4 +1,5 @@
 import json
+import math
 import os
 
 import folium
@@ -12,6 +13,16 @@ from streamlit_folium import st_folium
 
 CRS = 32643  # UTM zone 43N: подходит для Алматы
 MAX_TRAIN_ELEVATION = 1300  # модель обучена на участках ниже этой высоты
+SLOPE_STEP_M = 100  # шаг в метрах для расчёта уклона (как в train_model.py)
+SLOPE_LIMIT = 15  # склоны круче 15% относятся к неблагоприятным условиям застройки
+
+FEATURES = ["высота_м", "расст_до_дороги_м", "плотность_застройки", "уклон_%"]
+LABELS = {
+    "высота_м": "Высота",
+    "расст_до_дороги_м": "Расстояние до дороги",
+    "плотность_застройки": "Плотность застройки",
+    "уклон_%": "Уклон рельефа",
+}
 
 # "Типичный участок": медианы обучающей выборки.
 # Файл reference.json создаёт train_model.py; если его нет, берутся значения по умолчанию.
@@ -19,22 +30,19 @@ DEFAULT_REFERENCE = {
     "высота_м": 754.5,
     "расст_до_дороги_м": 40.6,
     "плотность_застройки": 84.5,
+    "уклон_%": 3.0,
 }
 
 
 def load_reference():
+    reference = DEFAULT_REFERENCE.copy()
     if os.path.exists("reference.json"):
         with open("reference.json", encoding="utf-8") as f:
-            return json.load(f)
-    return DEFAULT_REFERENCE
+            reference.update(json.load(f))
+    return reference
 
 
 REFERENCE = load_reference()
-LABELS = {
-    "высота_м": "Высота",
-    "расст_до_дороги_м": "Расстояние до дороги",
-    "плотность_застройки": "Плотность застройки",
-}
 
 st.set_page_config(page_title="GroundScope AI", page_icon="🏗️")
 st.title("🏗️ GroundScope AI: оценка участка")
@@ -58,11 +66,30 @@ except Exception:
     st.stop()
 
 
-def get_elevation(lat, lon):
-    url = f"https://api.open-meteo.com/v1/elevation?latitude={lat}&longitude={lon}"
+def neighbor_points(lat, lon, step=SLOPE_STEP_M):
+    """Четыре соседние точки: север, юг, восток, запад."""
+    dlat = step / 111320
+    dlon = step / (111320 * math.cos(math.radians(lat)))
+    return [(lat + dlat, lon), (lat - dlat, lon), (lat, lon + dlon), (lat, lon - dlon)]
+
+
+def slope_percent(z_north, z_south, z_east, z_west, step=SLOPE_STEP_M):
+    """Уклон в процентах по высотам четырёх соседних точек."""
+    dz_dy = (z_north - z_south) / (2 * step)
+    dz_dx = (z_east - z_west) / (2 * step)
+    return 100 * math.hypot(dz_dx, dz_dy)
+
+
+def get_elevation_and_slope(lat, lon):
+    """Одним запросом получает высоту точки и четырёх соседних, считает уклон."""
+    points = [(lat, lon)] + neighbor_points(lat, lon)
+    lat_part = ",".join(f"{p[0]:.6f}" for p in points)
+    lon_part = ",".join(f"{p[1]:.6f}" for p in points)
+    url = f"https://api.open-meteo.com/v1/elevation?latitude={lat_part}&longitude={lon_part}"
     response = requests.get(url, timeout=10)
     response.raise_for_status()
-    return response.json()["elevation"][0]
+    z_center, z_north, z_south, z_east, z_west = response.json()["elevation"]
+    return z_center, slope_percent(z_north, z_south, z_east, z_west)
 
 
 def explain(model, features):
@@ -113,7 +140,7 @@ if not city_polygon.contains(point):
 
 with st.spinner("Анализируем участок..."):
     try:
-        elevation = get_elevation(lat, lon)
+        elevation, slope = get_elevation_and_slope(lat, lon)
     except Exception:
         st.error("Не удалось получить высоту. Проверьте интернет и кликните по карте ещё раз.")
         st.stop()
@@ -123,23 +150,29 @@ with st.spinner("Анализируем участок..."):
     density = int(len(nearby))
 
     features = pd.DataFrame(
-        [[elevation, road_dist, density]],
-        columns=["высота_м", "расст_до_дороги_м", "плотность_застройки"],
+        [[elevation, road_dist, density, slope]],
+        columns=FEATURES,
     )
     score = float(model.predict(features)[0])
     effects = explain(model, features)
 
 st.metric("Предварительный score пригодности", f"{score:.1f} / 100")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("Высота", f"{elevation:.0f} м")
-col2.metric("До ближайшей дороги", f"{road_dist:.0f} м")
-col3.metric("Зданий в радиусе 300 м", density)
+col2.metric("До дороги", f"{road_dist:.0f} м")
+col3.metric("Зданий в 300 м", density)
+col4.metric("Уклон", f"{slope:.1f} %")
 
 if elevation > MAX_TRAIN_ELEVATION:
     st.warning(
         "Высота выше диапазона, на котором обучена модель (до 1300 м). "
         "Оценка может быть ненадёжной."
+    )
+elif slope > SLOPE_LIMIT:
+    st.warning(
+        f"Уклон больше {SLOPE_LIMIT}%: склоны круче этого значения относятся "
+        "к неблагоприятным условиям застройки в Алматы."
     )
 elif score > 80:
     st.success("Участок хорошо подходит под застройку по этим признакам.")
@@ -163,5 +196,6 @@ st.caption(
     "Это предварительная оценка на открытых данных. Она не заменяет геологические "
     "изыскания и проверку градостроительных ограничений. Score пока рассчитан по "
     "условной формуле, а не по экспертным меткам, поэтому объяснение показывает "
-    "логику модели, а не реальные свойства грунта."
+    "логику модели, а не реальные свойства грунта. Уклон считается по цифровой модели "
+    "рельефа с шагом около 90 м и даёт только приближённую оценку."
 )
