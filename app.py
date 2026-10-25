@@ -51,6 +51,14 @@ st.set_page_config(page_title="GroundScope AI", page_icon="🏗️")
 st.title("🏗️ GroundScope AI: оценка участка")
 st.write("Кликните по карте Алматы, чтобы получить предварительную оценку пригодности участка под застройку.")
 
+with st.sidebar:
+    st.header("О проекте")
+    st.write("Предварительная оценка пригодности участков Алматы под застройку на открытых данных.")
+    st.caption(
+        "Слои карты (схема и спутник) переключаются в правом верхнем углу карты. "
+        "Красный круг показывает радиус 300 м, в котором считается плотность застройки."
+    )
+
 
 @st.cache_resource
 def load_resources():
@@ -112,11 +120,21 @@ if "point" not in st.session_state:
     st.session_state.point = (43.2220, 76.8512)
 
 city_map = folium.Map(location=[43.25, 76.92], zoom_start=11)
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri World Imagery",
+    name="Спутник",
+).add_to(city_map)
 folium.GeoJson(
     boundary_wgs,
+    name="Граница города",
     style_function=lambda _: {"fillOpacity": 0.05, "weight": 2},
 ).add_to(city_map)
+folium.Circle(
+    st.session_state.point, radius=300, color="#e4572e", fill=False, tooltip="Радиус 300 м"
+).add_to(city_map)
 folium.Marker(st.session_state.point, tooltip="Выбранный участок").add_to(city_map)
+folium.LayerControl().add_to(city_map)
 
 map_data = st_folium(
     city_map,
@@ -199,16 +217,82 @@ if not warnings:
     else:
         st.error("У участка есть серьёзные ограничения по этим признакам.")
 
-st.subheader("Почему такая оценка")
-st.bar_chart(pd.DataFrame({"Вклад в оценку (баллы)": effects}))
+def suggest_uses(road_dist, density, slope, water_dist, elevation):
+    """Ориентировочные правила (пороги условные): какое использование участка выглядит разумным."""
+    blocked = []
+    if slope > SLOPE_LIMIT:
+        blocked.append("крутой склон")
+    if water_dist < WATER_NEAR_M:
+        blocked.append("близость к водотоку")
+    if elevation > MAX_TRAIN_ELEVATION:
+        blocked.append("большая высота")
+    if blocked:
+        why = "мешает: " + ", ".join(blocked)
+        return [(use, "не рекомендуется без специальных решений", why)
+                for use in ("Жильё", "Коммерция", "Склад, логистика")]
 
-notable = [(name, value) for name, value in effects.items() if abs(value) >= 0.5]
-if notable:
-    for name, value in sorted(notable, key=lambda item: item[1]):
-        direction = "повышает" if value > 0 else "понижает"
-        st.write(f"- **{name}** {direction} оценку на {abs(value):.1f} балла по сравнению с типичным участком")
-else:
-    st.write("Все признаки близки к типичному участку, поэтому сильных отклонений нет.")
+    results = []
+    if road_dist < 200 and 30 <= density <= 250:
+        results.append(("Жильё", "подходит", "есть подъезд и соседняя застройка"))
+    else:
+        results.append(("Жильё", "возможно", "проверьте подъезд и инфраструктуру рядом"))
+    if road_dist < 100 and density >= 80:
+        results.append(("Коммерция", "подходит", "рядом дорога и плотная застройка"))
+    else:
+        results.append(("Коммерция", "слабо подходит", "нужны близкая дорога и плотное окружение"))
+    if road_dist < 150 and density < 60 and slope < 5:
+        results.append(("Склад, логистика", "подходит", "ровный участок у дороги на окраине"))
+    else:
+        results.append(("Склад, логистика", "возможно", "лучше ровный участок у дороги с редкой застройкой"))
+    return results
+
+
+tab_why, tab_use, tab_signal = st.tabs(
+    ["Почему такая оценка", "Что можно построить", "Сигнал технике (демо)"]
+)
+
+with tab_why:
+    chart = pd.DataFrame({"Вклад (баллы)": effects})
+    st.bar_chart(chart, horizontal=True, sort="-Вклад (баллы)")
+    notable = [(name, value) for name, value in effects.items() if abs(value) >= 0.5]
+    if notable:
+        for name, value in sorted(notable, key=lambda item: item[1]):
+            direction = "повышает" if value > 0 else "понижает"
+            st.write(f"- **{name}** {direction} оценку на {abs(value):.1f} балла по сравнению с типичным участком")
+    else:
+        st.write("Все признаки близки к типичному участку, поэтому сильных отклонений нет.")
+
+with tab_use:
+    for use, verdict, reason in suggest_uses(road_dist, density, slope, water_dist, elevation):
+        st.write(f"**{use}:** {verdict}. {reason}.")
+    st.caption(
+        "Это простые правила с условными порогами, а не обученная модель. Реальное назначение "
+        "участка определяют генплан и зонирование, их данных в прототипе пока нет."
+    )
+
+with tab_signal:
+    ready = score >= 80 and not warnings
+    st.write(
+        "Идея: если участок прошёл проверку, система может сообщить технике на площадке, что "
+        "работы можно начинать. Здесь только демонстрация формата сообщения: реальная техника "
+        "не подключена."
+    )
+    if ready:
+        st.success("Статус: участок готов к застройке по этим признакам.")
+    else:
+        st.info("Статус: участок не прошёл проверку, сигнал не отправляется.")
+    if st.button("Сформировать сигнал (демо)", disabled=not ready):
+        st.json({
+            "type": "site_approved",
+            "demo": True,
+            "site": {"lat": round(lat, 5), "lon": round(lon, 5)},
+            "score": round(score, 1),
+            "checks": {"slope_ok": slope <= SLOPE_LIMIT, "water_ok": water_dist >= WATER_NEAR_M},
+        })
+        st.caption(
+            "Такое сообщение можно отправить на учебного робота по Wi-Fi. К настоящей технике "
+            "подключать систему нельзя без сертификации безопасности."
+        )
 
 st.caption(
     "Это предварительная оценка на открытых данных. Она не заменяет геологические "
