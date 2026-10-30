@@ -4,10 +4,12 @@ import os
 
 import folium
 import joblib
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 import requests
 import streamlit as st
+from pyproj import Transformer
 from shapely.geometry import Point
 from streamlit_folium import st_folium
 
@@ -114,6 +116,43 @@ def explain(model, features):
         effects[LABELS[col]] = base - float(model.predict(typical)[0])
     return effects
 
+
+GROWTH_TEXT = {
+    0: ("Вне зоны оценки", "Точка далеко от существующей застройки, поэтому слой роста её не оценивает."),
+    1: ("Низкое давление застройки", "У похожих участков застройка в 2000-2015 годах приходила редко."),
+    2: ("Среднее давление застройки", "У похожих участков застройка приходила умеренно часто."),
+    3: ("Высокое давление застройки", "Участки с похожим окружением чаще всего застраивались в 2000-2015 годах."),
+    4: ("Уже застроено", "Ячейка 100 м, в которую попала точка, уже застроена по данным GHSL 2020."),
+    5: ("Частично застроено", "Ячейка частично занята застройкой по данным GHSL 2020."),
+}
+
+
+@st.cache_resource
+def load_growth():
+    if not os.path.exists("data/growth_layer.npz"):
+        return None
+    data = np.load("data/growth_layer.npz")
+    return {
+        "level": data["level"],
+        "transform": data["transform"],
+        "to_layer": Transformer.from_crs(4326, str(data["crs"]), always_xy=True),
+    }
+
+
+def growth_level(lat, lon, growth):
+    """Код давления застройки для ячейки, в которую попала точка (None, если слоя нет)."""
+    if growth is None:
+        return None
+    x, y = growth["to_layer"].transform(lon, lat)
+    c, a, f, e = growth["transform"]
+    col, row = int((x - c) // a), int((y - f) // e)
+    level = growth["level"]
+    if 0 <= row < level.shape[0] and 0 <= col < level.shape[1]:
+        return int(level[row, col])
+    return 0
+
+
+growth = load_growth()
 
 # --- Карта ---
 if "point" not in st.session_state:
@@ -247,8 +286,8 @@ def suggest_uses(road_dist, density, slope, water_dist, elevation):
     return results
 
 
-tab_why, tab_use, tab_signal = st.tabs(
-    ["Почему такая оценка", "Что можно построить", "Сигнал технике (демо)"]
+tab_why, tab_use, tab_growth, tab_signal = st.tabs(
+    ["Почему такая оценка", "Что можно построить", "Давление застройки", "Сигнал технике (демо)"]
 )
 
 with tab_why:
@@ -269,6 +308,24 @@ with tab_use:
         "Это простые правила с условными порогами, а не обученная модель. Реальное назначение "
         "участка определяют генплан и зонирование, их данных в прототипе пока нет."
     )
+
+with tab_growth:
+    level = growth_level(lat, lon, growth)
+    if level is None:
+        st.info("Слой роста пока не подключён: нужен файл data/growth_layer.npz.")
+    else:
+        title, text = GROWTH_TEXT[level]
+        st.write(f"**{title}.** {text}")
+        if level == 3 and warnings:
+            st.warning(
+                "Район застраивается активно, но у участка есть ограничения (см. выше). "
+                "Именно в таких случаях важна проверка рисков."
+            )
+        st.caption(
+            "Это относительная оценка внутри Алматы: модель на данных GHSL (100 м) обучена на росте города "
+            "2000-2015 годов и делит ячейки на три равные группы. Она показывает, куда город тянется, "
+            "а не пригодность участка: высокое давление застройки не означает, что строить безопасно."
+        )
 
 with tab_signal:
     ready = score >= 80 and not warnings
