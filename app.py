@@ -152,6 +152,17 @@ def growth_level(lat, lon, growth):
     return 0
 
 
+def growth_around(lat, lon, growth, radius=5):
+    """Сколько свободных ячеек в радиусе около 500 м имеют низкое (1), среднее (2) и высокое (3) давление."""
+    if growth is None:
+        return None
+    x, y = growth["to_layer"].transform(lon, lat)
+    c, a, f, e = growth["transform"]
+    col, row = int((x - c) // a), int((y - f) // e)
+    window = growth["level"][max(row - radius, 0):row + radius + 1, max(col - radius, 0):col + radius + 1]
+    return {code: int((window == code).sum()) for code in (1, 2, 3)}
+
+
 growth = load_growth()
 
 # --- Карта ---
@@ -316,6 +327,14 @@ with tab_growth:
     else:
         title, text = GROWTH_TEXT[level]
         st.write(f"**{title}.** {text}")
+        around = growth_around(lat, lon, growth)
+        if around and sum(around.values()) > 0:
+            st.write(
+                f"**В радиусе около 500 м** свободных ячеек по 100 м: {sum(around.values())}. "
+                f"Высокое давление: {around[3]}, среднее: {around[2]}, низкое: {around[1]}."
+            )
+        else:
+            st.write("В радиусе около 500 м свободных ячеек для оценки нет: окрестность уже застроена или лежит вдали от города.")
         if level == 3 and warnings:
             st.warning(
                 "Район застраивается активно, но у участка есть ограничения (см. выше). "
