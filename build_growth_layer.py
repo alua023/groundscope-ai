@@ -8,7 +8,10 @@
 import geopandas as gpd
 import numpy as np
 from pyproj import Transformer
+from rasterio.crs import CRS
 from rasterio.features import rasterize
+from rasterio.transform import array_bounds
+from rasterio.warp import Resampling, calculate_default_transform, reproject
 from sklearn.ensemble import RandomForestClassifier
 
 from growth_model import (
@@ -19,6 +22,29 @@ from growth_model import (
 OUT = "data/growth_layer.npz"
 # коды слоя: 0 вне зоны оценки, 1 низкое, 2 среднее, 3 высокое давление застройки,
 # 4 уже застроено, 5 частично застроено
+
+
+OVERLAY_COLORS = {1: (70, 130, 255, 150), 2: (255, 200, 0, 170), 3: (230, 40, 30, 190)}
+
+
+def make_overlay(level, transform, crs_wkt):
+    """Цветная картинка слоя в обычных координатах (широта, долгота) для наложения на карту."""
+    height, width = level.shape
+    src_crs = CRS.from_wkt(crs_wkt)
+    west, south, east, north = array_bounds(height, width, transform)
+    dst_transform, dst_w, dst_h = calculate_default_transform(
+        src_crs, "EPSG:4326", width, height, west, south, east, north
+    )
+    projected = np.zeros((dst_h, dst_w), dtype="uint8")
+    reproject(
+        source=level, destination=projected, src_transform=transform, src_crs=src_crs,
+        dst_transform=dst_transform, dst_crs="EPSG:4326", resampling=Resampling.nearest,
+    )
+    rgba = np.zeros((dst_h, dst_w, 4), dtype="uint8")
+    for code, color in OVERLAY_COLORS.items():
+        rgba[projected == code] = color
+    w2, s2, e2, n2 = array_bounds(dst_h, dst_w, dst_transform)
+    return rgba, np.array([[s2, w2], [n2, e2]])
 
 
 def assign_levels(b_now, candidate, proba):
@@ -65,9 +91,12 @@ if __name__ == "__main__":
     proba = model.predict_proba(X_now)[:, 1]
     level, thresholds = assign_levels(b2, candidate_now, proba)
 
+    overlay, bounds = make_overlay(level, transform, crs_wkt)
     np.savez_compressed(
         OUT,
         level=level,
+        overlay=overlay,
+        bounds=bounds,
         transform=np.array([transform.c, transform.a, transform.f, transform.e]),
         crs=crs_wkt,
     )

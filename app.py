@@ -60,6 +60,15 @@ with st.sidebar:
         "Слои карты (схема и спутник) переключаются в правом верхнем углу карты. "
         "Красный круг показывает радиус 300 м, в котором считается плотность застройки."
     )
+    st.caption(
+        "Слой «Давление застройки» включается в том же переключателе: синий означает низкое, "
+        "жёлтый среднее, красный высокое давление новой застройки."
+    )
+    with st.expander("Как это работает"):
+        st.write("- Для точки считаются высота, уклон, расстояние до дороги и водотока, плотность застройки.")
+        st.write("- Модель оценивает пригодность по условной формуле: экспертных меток пока нет.")
+        st.write("- Давление застройки обучено на реальном росте города 2000-2015 по данным GHSL.")
+        st.write("- Это учебный прототип, он не заменяет изыскания и проверку норм.")
 
 
 @st.cache_resource
@@ -132,11 +141,15 @@ def load_growth():
     if not os.path.exists("data/growth_layer.npz"):
         return None
     data = np.load("data/growth_layer.npz")
-    return {
+    result = {
         "level": data["level"],
         "transform": data["transform"],
         "to_layer": Transformer.from_crs(4326, str(data["crs"]), always_xy=True),
     }
+    if "overlay" in data.files:
+        result["overlay"] = data["overlay"]
+        result["bounds"] = data["bounds"].tolist()
+    return result
 
 
 def growth_level(lat, lon, growth):
@@ -183,7 +196,14 @@ folium.GeoJson(
 folium.Circle(
     st.session_state.point, radius=300, color="#e4572e", fill=False, tooltip="Радиус 300 м"
 ).add_to(city_map)
-folium.Marker(st.session_state.point, tooltip="Выбранный участок").add_to(city_map)
+if growth is not None and "overlay" in growth:
+    folium.raster_layers.ImageOverlay(
+        image=growth["overlay"], bounds=growth["bounds"], name="Давление застройки", opacity=0.85, show=False
+    ).add_to(city_map)
+folium.CircleMarker(
+    st.session_state.point, radius=7, color="#ffffff", weight=2, fill=True,
+    fill_color="#e4572e", fill_opacity=1, tooltip="Выбранный участок",
+).add_to(city_map)
 folium.LayerControl().add_to(city_map)
 
 map_data = st_folium(
@@ -315,6 +335,11 @@ with tab_why:
 with tab_use:
     for use, verdict, reason in suggest_uses(road_dist, density, slope, water_dist, elevation):
         st.write(f"**{use}:** {verdict}. {reason}.")
+    st.info(
+        "Этажность в Алматы ограничивают сейсмическая зона, близость разломов и положение участка "
+        "(предгорья). Допустимую высоту определяют генплан, СП РК 2.03-31-2020 и экспертиза. "
+        "Этих данных в прототипе нет, поэтому не используйте его для выбора этажности."
+    )
     st.caption(
         "Это простые правила с условными порогами, а не обученная модель. Реальное назначение "
         "участка определяют генплан и зонирование, их данных в прототипе пока нет."
