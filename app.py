@@ -49,7 +49,7 @@ def load_reference():
 
 REFERENCE = load_reference()
 
-st.set_page_config(page_title="GroundScope AI", page_icon="🏗️")
+st.set_page_config(page_title="GroundScope AI", page_icon="🏗️", layout="wide")
 st.title("🏗️ GroundScope AI: оценка участка")
 st.write("Кликните по карте Алматы, чтобы получить предварительную оценку пригодности участка под застройку.")
 
@@ -182,46 +182,49 @@ growth = load_growth()
 if "point" not in st.session_state:
     st.session_state.point = (43.2220, 76.8512)
 
-city_map = folium.Map(location=[43.25, 76.92], zoom_start=11)
-folium.TileLayer(
-    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attr="Esri World Imagery",
-    name="Спутник",
-).add_to(city_map)
-folium.GeoJson(
-    boundary_wgs,
-    name="Граница города",
-    style_function=lambda _: {"fillOpacity": 0.05, "weight": 2},
-).add_to(city_map)
-folium.Circle(
-    st.session_state.point, radius=300, color="#e4572e", fill=False, tooltip="Радиус 300 м"
-).add_to(city_map)
-if growth is not None and "overlay" in growth:
-    folium.raster_layers.ImageOverlay(
-        image=growth["overlay"], bounds=growth["bounds"], name="Давление застройки", opacity=0.85, show=False
+col_map, col_res = st.columns([3, 2], gap="large")
+
+with col_map:
+    city_map = folium.Map(location=[43.25, 76.92], zoom_start=11)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="Спутник",
     ).add_to(city_map)
-folium.CircleMarker(
-    st.session_state.point, radius=7, color="#ffffff", weight=2, fill=True,
-    fill_color="#e4572e", fill_opacity=1, tooltip="Выбранный участок",
-).add_to(city_map)
-folium.LayerControl().add_to(city_map)
+    folium.GeoJson(
+        boundary_wgs,
+        name="Граница города",
+        style_function=lambda _: {"fillOpacity": 0.05, "weight": 2},
+    ).add_to(city_map)
+    folium.Circle(
+        st.session_state.point, radius=300, color="#e4572e", fill=False, tooltip="Радиус 300 м"
+    ).add_to(city_map)
+    if growth is not None and "overlay" in growth:
+        folium.raster_layers.ImageOverlay(
+            image=growth["overlay"], bounds=growth["bounds"], name="Давление застройки", opacity=0.85, show=False
+        ).add_to(city_map)
+    folium.CircleMarker(
+        st.session_state.point, radius=7, color="#ffffff", weight=2, fill=True,
+        fill_color="#e4572e", fill_opacity=1, tooltip="Выбранный участок",
+    ).add_to(city_map)
+    folium.LayerControl().add_to(city_map)
 
-map_data = st_folium(
-    city_map,
-    height=450,
-    use_container_width=True,
-    returned_objects=["last_clicked"],
-)
+    map_data = st_folium(
+        city_map,
+        height=450,
+        use_container_width=True,
+        returned_objects=["last_clicked"],
+    )
 
-clicked = map_data.get("last_clicked") if map_data else None
-if clicked:
-    new_point = (clicked["lat"], clicked["lng"])
-    if new_point != st.session_state.point:
-        st.session_state.point = new_point
-        st.rerun()
+    clicked = map_data.get("last_clicked") if map_data else None
+    if clicked:
+        new_point = (clicked["lat"], clicked["lng"])
+        if new_point != st.session_state.point:
+            st.session_state.point = new_point
+            st.rerun()
 
-lat, lon = st.session_state.point
-st.caption(f"Выбранная точка: {lat:.5f}, {lon:.5f}")
+    lat, lon = st.session_state.point
+    st.caption(f"Выбранная точка: {lat:.5f}, {lon:.5f}")
 
 # --- Анализ выбранной точки ---
 point = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(CRS).iloc[0]
@@ -249,43 +252,46 @@ with st.spinner("Анализируем участок..."):
     score = float(model.predict(features)[0])
     effects = explain(model, features)
 
-st.metric("Предварительный score пригодности", f"{score:.1f} / 100")
+with col_res:
+    st.metric("Предварительный score пригодности", f"{score:.1f} / 100")
 
-row1 = st.columns(3)
-row1[0].metric("Высота", f"{elevation:.0f} м")
-row1[1].metric("До дороги", f"{road_dist:.0f} м")
-row1[2].metric("Зданий в 300 м", density)
-row2 = st.columns(3)
-row2[0].metric("Уклон", f"{slope:.1f} %")
-row2[1].metric("До водотока", f"{water_dist:.0f} м")
+    row1 = st.columns(3)
+    row1[0].metric("Высота", f"{elevation:.0f} м")
+    row1[1].metric("До дороги", f"{road_dist:.0f} м")
+    row1[2].metric("Зданий в 300 м", density)
+    row2 = st.columns(3)
+    row2[0].metric("Уклон", f"{slope:.1f} %")
+    row2[1].metric("До водотока", f"{water_dist:.0f} м")
 
-warnings = []
-if elevation > MAX_TRAIN_ELEVATION:
-    warnings.append(
-        "Высота выше диапазона, на котором обучена модель (до 1300 м). "
-        "Оценка может быть ненадёжной."
-    )
-if slope > SLOPE_LIMIT:
-    warnings.append(
-        f"Уклон больше {SLOPE_LIMIT}%: склоны круче этого значения относятся "
-        "к неблагоприятным условиям застройки в Алматы."
-    )
-if water_dist < WATER_NEAR_M:
-    warnings.append(
-        f"Участок ближе {WATER_NEAR_M} м к реке, ручью или каналу: возможен риск подтопления "
-        "или селевого воздействия. Это приближённый признак по данным OpenStreetMap, "
-        "водоохранные зоны нужно проверять отдельно."
-    )
+    warnings = []
+    if elevation > MAX_TRAIN_ELEVATION:
+        warnings.append(
+            "Высота выше диапазона, на котором обучена модель (до 1300 м). "
+            "Оценка может быть ненадёжной."
+        )
+    if slope > SLOPE_LIMIT:
+        warnings.append(
+            f"Уклон больше {SLOPE_LIMIT}%: склоны круче этого значения относятся "
+            "к неблагоприятным условиям застройки в Алматы."
+        )
+    if water_dist < WATER_NEAR_M:
+        warnings.append(
+            f"Участок ближе {WATER_NEAR_M} м к реке, ручью или каналу: возможен риск подтопления "
+            "или селевого воздействия. Это приближённый признак по данным OpenStreetMap, "
+            "водоохранные зоны нужно проверять отдельно."
+        )
 
-for text in warnings:
-    st.warning(text)
-if not warnings:
-    if score > 80:
-        st.success("Участок хорошо подходит под застройку по этим признакам.")
-    elif score > 50:
-        st.warning("Участок требует дополнительной оценки.")
-    else:
-        st.error("У участка есть серьёзные ограничения по этим признакам.")
+    for text in warnings:
+        st.warning(text)
+    if not warnings:
+        if score > 80:
+            st.success("Участок хорошо подходит под застройку по этим признакам.")
+        elif score > 50:
+            st.warning("Участок требует дополнительной оценки.")
+        else:
+            st.error("У участка есть серьёзные ограничения по этим признакам.")
+
+
 
 def suggest_uses(road_dist, density, slope, water_dist, elevation):
     """Ориентировочные правила (пороги условные): какое использование участка выглядит разумным."""
@@ -317,8 +323,8 @@ def suggest_uses(road_dist, density, slope, water_dist, elevation):
     return results
 
 
-tab_why, tab_use, tab_growth, tab_signal = st.tabs(
-    ["Почему такая оценка", "Что можно построить", "Давление застройки", "Сигнал технике (демо)"]
+tab_why, tab_use, tab_growth, tab_cv, tab_summary, tab_signal = st.tabs(
+    ["Почему такая оценка", "Что можно построить", "Давление застройки", "Эксперимент (CV)", "Сводка", "Сигнал технике (демо)"]
 )
 
 with tab_why:
@@ -370,6 +376,42 @@ with tab_growth:
             "2000-2015 годов и делит ячейки на три равные группы. Она показывает, куда город тянется, "
             "а не пригодность участка: высокое давление застройки не означает, что строить безопасно."
         )
+
+with tab_cv:
+    st.write(
+        "Компьютерное зрение: свёрточная сеть (CNN) получает «снимок» 21 x 21 ячеек (около 2 км) вокруг каждой "
+        "почти пустой ячейки со слоями застройки 2000 года, расстояния до воды, высоты и уклона и предсказывает, "
+        "станет ли ячейка застроенной к 2015 году. Результаты сравниваются с Random Forest по 5 частям города."
+    )
+    st.write(
+        "Слой «Давление застройки» в приложении построен моделью Random Forest: в сравнении она оказалась "
+        "точнее сети на этих данных."
+    )
+    for path, caption in [
+        ("data/cnn_results.png", "Сравнение моделей: AUC по 5 частям города"),
+        ("data/cnn_map.png", "Оценка сети рядом с реальным ростом"),
+    ]:
+        if os.path.exists(path):
+            st.image(path, caption=caption)
+        else:
+            st.info(f"Файл {path} не найден: его создаёт cnn_growth.py.")
+
+with tab_summary:
+    lvl = growth_level(lat, lon, growth)
+    pressure = GROWTH_TEXT[lvl][0] if lvl is not None else "слой не подключён"
+    lines = [
+        f"Участок: {lat:.5f}, {lon:.5f} (Алматы)",
+        f"Предварительный score пригодности: {score:.1f} из 100 (условная формула, не экспертная оценка)",
+        f"Высота: {elevation:.0f} м; уклон: {slope:.1f} %",
+        f"До ближайшей дороги: {road_dist:.0f} м; зданий в радиусе 300 м: {density}",
+        f"До ближайшего водотока: {water_dist:.0f} м",
+        f"Давление застройки: {pressure}",
+        "Предупреждения: " + ("; ".join(warnings) if warnings else "нет"),
+        "Это предварительная оценка на открытых данных. Она не заменяет геологические изыскания и проверку норм.",
+    ]
+    summary = "\n".join(lines)
+    st.text(summary)
+    st.download_button("Скачать сводку (.txt)", summary, file_name="site_summary.txt")
 
 with tab_signal:
     ready = score >= 80 and not warnings
